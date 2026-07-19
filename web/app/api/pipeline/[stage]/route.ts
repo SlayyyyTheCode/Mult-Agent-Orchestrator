@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { callClaude, callClaudeJson } from "@/lib/claude";
 import { ingestSystem, mckinseySystem, organizeSystem, uiuxSystem, validateSystem } from "@/lib/agents/prompts";
 import { getManifest, getRunFile, listRunFiles, putRunFile, saveManifest } from "@/lib/blob";
-import { deckSpec, minutesSpec, validationSummary, type DeliverableMode, type PipelineStage, PIPELINE_STAGES } from "@/lib/schemas";
+import { deckSpec, minutesSpec, validationSummary, type PipelineStage, PIPELINE_STAGES } from "@/lib/schemas";
 import { extractText, fileKind, mediaTypeForImage } from "@/lib/extract";
 import { renderDeck } from "@/lib/render/pptx";
 import { renderMinutes } from "@/lib/render/docx";

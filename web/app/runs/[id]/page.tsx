@@ -44,7 +44,9 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   }, [id]);
 
   useEffect(() => {
-    void load();
+    // async fetch → state set after await, not synchronously in the effect
+    const t = setTimeout(() => void load(), 0);
+    return () => clearTimeout(t);
   }, [load]);
 
   async function upload(files: FileList | null) {

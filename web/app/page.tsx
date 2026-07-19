@@ -23,7 +23,9 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    void load();
+    // async fetch → state set after await, not synchronously in the effect
+    const t = setTimeout(() => void load(), 0);
+    return () => clearTimeout(t);
   }, [load]);
 
   async function createRun(e: React.FormEvent) {
