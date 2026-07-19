@@ -19,3 +19,6 @@ __pycache__/
 Thumbs.db
 .DS_Store
 orchestrator-agents.zip
+
+.vercel
+.env*.local
