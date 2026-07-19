@@ -1,0 +1,21 @@
+# Private working data — never push meeting content or deliverables
+inbox/*
+workspace/*
+deliverables/*
+templates/*
+
+# keep folder structure in the repo
+!inbox/.gitkeep
+!workspace/.gitkeep
+!deliverables/.gitkeep
+!templates/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+orchestrator-agents.zip
