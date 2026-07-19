@@ -1,7 +1,9 @@
-import { put, list, del } from "@vercel/blob";
+import { del, get, list, put } from "@vercel/blob";
 
 // All run state lives in Vercel Blob under users/{userId}/runs/{runId}/.
-// No database in MVP — the runs list is a prefix listing.
+// Every blob is PRIVATE — content (meeting docs, deliverables) is never
+// reachable by URL alone; reads go through the SDK with the store token and
+// downloads are streamed through an authenticated API route.
 
 export function runPrefix(userId: string, runId: string) {
   return `users/${userId}/runs/${runId}`;
@@ -15,19 +17,40 @@ export async function putRunFile(
   contentType?: string
 ) {
   return put(`${runPrefix(userId, runId)}/${name}`, body, {
-    access: "public",
+    access: "private",
     contentType,
     addRandomSuffix: false,
     allowOverwrite: true,
   });
 }
 
+async function streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function getRunFile(userId: string, runId: string, name: string): Promise<string | null> {
-  const { blobs } = await list({ prefix: `${runPrefix(userId, runId)}/${name}`, limit: 1 });
-  if (!blobs.length) return null;
-  const res = await fetch(blobs[0].url, { cache: "no-store" });
-  if (!res.ok) return null;
-  return res.text();
+  const buf = await getRunFileBuffer(userId, runId, name);
+  return buf ? buf.toString("utf-8") : null;
+}
+
+export async function getRunFileBuffer(userId: string, runId: string, name: string): Promise<Buffer | null> {
+  const res = await get(`${runPrefix(userId, runId)}/${name}`, { access: "private", useCache: false }).catch(() => null);
+  if (!res || res.statusCode !== 200 || !res.stream) return null;
+  return streamToBuffer(res.stream);
+}
+
+/** Stream a run file for download (authenticated route use only). */
+export async function getRunFileStream(userId: string, runId: string, name: string) {
+  const res = await get(`${runPrefix(userId, runId)}/${name}`, { access: "private", useCache: false }).catch(() => null);
+  if (!res || res.statusCode !== 200 || !res.stream) return null;
+  return { stream: res.stream, contentType: res.headers.get("content-type") ?? "application/octet-stream" };
 }
 
 export async function listRunFiles(userId: string, runId: string) {
@@ -36,14 +59,15 @@ export async function listRunFiles(userId: string, runId: string) {
 }
 
 export async function listRuns(userId: string) {
-  // manifest.json marks a run; one fetch per run keeps MVP simple.
-  const { blobs } = await list({ prefix: `users/${userId}/runs/` });
+  // manifest.json marks a run; manifests are fetched in parallel.
+  const { blobs } = await list({ prefix: `users/${userId}/runs/`, limit: 500 });
   const manifests = blobs.filter((b) => b.pathname.endsWith("/manifest.json"));
   const runs = await Promise.all(
     manifests.map(async (m) => {
       try {
-        const res = await fetch(m.url, { cache: "no-store" });
-        return (await res.json()) as RunManifest;
+        const res = await get(m.pathname, { access: "private", useCache: false });
+        if (!res || res.statusCode !== 200 || !res.stream) return null;
+        return JSON.parse((await streamToBuffer(res.stream)).toString("utf-8")) as RunManifest;
       } catch {
         return null;
       }
@@ -65,7 +89,8 @@ export interface RunManifest {
   created_at: string; // ISO
   files: { name: string; size: number; supported: boolean }[];
   stages: Partial<Record<string, { status: "done" | "error"; at: string; detail?: string }>>;
-  deliverables: { mode: string; name: string; url: string; at: string }[];
+  /** name is the blob file name under deliverables/ — downloads go through /api/runs/[id]/download */
+  deliverables: { mode: string; name: string; at: string }[];
   tokens_used: number;
 }
 

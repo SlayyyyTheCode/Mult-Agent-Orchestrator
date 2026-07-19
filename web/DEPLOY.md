@@ -28,7 +28,22 @@ API keys. Steps:
    - `CLAUDE_MODEL` = claude-sonnet-5 (optional, this is the default)
    - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` = pk_…
    - `CLERK_SECRET_KEY` = sk_…
+   - `ALLOWED_EMAILS` = your@email.com (comma-separated for teammates —
+     **required**: production fails closed without it, so a stranger who signs
+     up can never spend your Claude tokens)
 5. Deploy.
+
+## Abuse guardrails (already enforced in code)
+
+- **Email allowlist** (`ALLOWED_EMAILS`) — every API route checks it; unknown
+  accounts get 403 before any Claude call or storage access.
+- **Per-run token budget** (`MAX_TOKENS_PER_RUN`, default 300k) — a run that
+  hits its budget gets 429 on further Claude stages.
+- **Upload caps** — 20 MB/file, `MAX_FILES_PER_RUN` (default 20) files.
+- **Private storage** — all blobs are private; deliverables download only
+  through the authenticated `/api/runs/[id]/download` route.
+- Also recommended: Clerk dashboard → Restrictions → disable open sign-ups
+  (invite-only), and an Anthropic console monthly spend limit.
 
 ## 4. Function duration
 

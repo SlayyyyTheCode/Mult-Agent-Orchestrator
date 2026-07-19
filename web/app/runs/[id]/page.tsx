@@ -284,7 +284,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                 {run.deliverables.map((d, i) => (
                   <li key={i}>
                     <a
-                      href={d.url}
+                      href={`/api/runs/${run.run_id}/download?name=${encodeURIComponent(d.name)}`}
                       download={d.name}
                       className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     >

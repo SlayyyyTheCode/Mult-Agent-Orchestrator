@@ -1,24 +1,27 @@
-import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { callClaude, callClaudeJson } from "@/lib/claude";
 import { ingestSystem, mckinseySystem, organizeSystem, uiuxSystem, validateSystem } from "@/lib/agents/prompts";
-import { getManifest, getRunFile, listRunFiles, putRunFile, saveManifest } from "@/lib/blob";
+import { getManifest, getRunFileBuffer, getRunFile, putRunFile, saveManifest } from "@/lib/blob";
 import { deckSpec, minutesSpec, validationSummary, type PipelineStage, PIPELINE_STAGES } from "@/lib/schemas";
 import { extractText, fileKind, mediaTypeForImage } from "@/lib/extract";
 import { renderDeck } from "@/lib/render/pptx";
 import { renderMinutes } from "@/lib/render/docx";
+import { MAX_TOKENS_PER_RUN, requireUser } from "@/lib/authz";
 import { z } from "zod";
 
 export const maxDuration = 300; // needs Vercel fluid compute / pro for full length
 
 const body = z.object({
-  runId: z.string().min(1),
+  runId: z.string().min(1).max(64),
   mode: z.enum(["deck-csuite", "deck-technical", "minutes"]).optional(),
 });
 
+const CLAUDE_STAGES: PipelineStage[] = ["ingest", "organize", "validate", "generate", "review"];
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: string }> }) {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const authz = await requireUser();
+  if (!authz.ok) return NextResponse.json({ error: authz.error }, { status: authz.status });
+  const userId = authz.userId;
 
   const { stage } = await ctx.params;
   if (!PIPELINE_STAGES.includes(stage as PipelineStage)) {
@@ -32,47 +35,72 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
   const manifest = await getManifest(userId, runId);
   if (!manifest) return NextResponse.json({ error: "run not found" }, { status: 404 });
 
+  // Hard token-budget stop: no further Claude spend once a run hits its cap.
+  if (CLAUDE_STAGES.includes(stage as PipelineStage) && manifest.tokens_used >= MAX_TOKENS_PER_RUN) {
+    return NextResponse.json(
+      { error: `run token budget exhausted (${manifest.tokens_used.toLocaleString()} / ${MAX_TOKENS_PER_RUN.toLocaleString()}). Start a new run or raise MAX_TOKENS_PER_RUN.` },
+      { status: 429 }
+    );
+  }
+
   try {
     let tokens = 0;
     let result: unknown = null;
 
     switch (stage as PipelineStage) {
       case "ingest": {
-        const blobs = await listRunFiles(userId, runId);
-        const inputs = blobs.filter((b) => b.pathname.includes("/inbox/"));
-        if (!inputs.length) throw new Error("no uploaded files in this run");
-        const sections: string[] = [];
-        for (const blob of inputs) {
-          const name = blob.pathname.split("/").pop()!;
+        if (!manifest.files.length) throw new Error("no uploaded files in this run");
+
+        // Documents: deterministic, lossless, source-tagged — no Claude call.
+        // Images: Claude vision transcription, run in parallel.
+        const docSections: string[] = [];
+        const imageTasks: Promise<string>[] = [];
+
+        for (const f of manifest.files) {
+          const name = f.name;
           const kind = fileKind(name);
-          if (kind === "audio") {
-            sections.push(`=== FILE: ${name} ===\n[UNREADABLE: audio not supported — please provide a transcript] (L)`);
+          if (kind === "audio" || kind === "unsupported") {
+            docSections.push(`# Source: ${name}\n\n## Extraction Issues\n- [UNREADABLE: ${kind === "audio" ? "audio not supported — please provide a transcript" : "unsupported file type"}] (L)`);
             continue;
           }
-          const res = await fetch(blob.url);
-          const buf = Buffer.from(await res.arrayBuffer());
+          const buf = await getRunFileBuffer(userId, runId, `inbox/${name}`);
+          if (!buf) {
+            docSections.push(`# Source: ${name}\n\n## Extraction Issues\n- [UNREADABLE: file missing from storage] (L)`);
+            continue;
+          }
           if (kind === "image") {
-            const claude = await callClaude({
-              system: ingestSystem(),
-              user: [
-                { type: "image", source: { type: "base64", media_type: mediaTypeForImage(name) as "image/png", data: buf.toString("base64") } },
-                { type: "text", text: `Transcribe this image of notes losslessly. Filename for source tags: ${name}` },
-              ],
-            });
-            tokens += claude.tokens;
-            sections.push(`=== FILE: ${name} (image) ===\n${claude.text}`);
+            imageTasks.push(
+              callClaude({
+                system: ingestSystem(),
+                user: [
+                  { type: "image", source: { type: "base64", media_type: mediaTypeForImage(name) as "image/png", data: buf.toString("base64") } },
+                  { type: "text", text: `Transcribe this image of notes losslessly. Filename for source tags: ${name}` },
+                ],
+              }).then((r) => {
+                tokens += r.tokens;
+                return `# Source: ${name} (image)\n\n${r.text}`;
+              })
+            );
           } else {
-            sections.push(await extractText(name, buf));
+            const raw = await extractText(name, buf);
+            docSections.push(tagDocument(name, raw));
           }
         }
-        const claude = await callClaude({
-          system: ingestSystem(),
-          user: `run_id: ${runId}\n\nRaw extracted content follows. Convert to the source-tagged Markdown contract.\n\n${sections.join("\n\n")}`,
-          maxTokens: 16000,
-        });
-        tokens += claude.tokens;
-        await putRunFile(userId, runId, "01-ingest.md", claude.text, "text/markdown");
-        result = { chars: claude.text.length };
+
+        const imageSections = await Promise.all(imageTasks);
+        const combined = [
+          `---`,
+          `from_agent: document-ingest`,
+          `run_id: ${runId}`,
+          `sources: [${manifest.files.map((f) => f.name).join(", ")}]`,
+          `status: draft`,
+          `---`,
+          ``,
+          ...docSections,
+          ...imageSections,
+        ].join("\n");
+        await putRunFile(userId, runId, "01-ingest.md", combined, "text/markdown");
+        result = { chars: combined.length, image_files: imageSections.length };
         break;
       }
 
@@ -166,22 +194,24 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
         const specText = await getRunFile(userId, runId, `05-spec-${mode}.json`);
         if (!specText) throw new Error("reviewed spec missing — run review first");
         const raw = JSON.parse(specText);
+        let name: string;
         if (mode === "minutes") {
           const spec = minutesSpec.parse(raw);
           const { buffer, estPages, overBudget } = await renderMinutes(spec);
           if (overBudget) throw new Error(`minutes estimated at ${estPages} pages > 10-page budget — regenerate with compression`);
-          const name = `${sanitize(spec.meta.title)}.docx`;
-          const blob = await putRunFile(userId, runId, `deliverables/${name}`, buffer, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-          manifest.deliverables.push({ mode, name, url: blob.url, at: new Date().toISOString() });
-          result = { name, url: blob.url, estPages };
+          name = `${sanitize(spec.meta.title)}.docx`;
+          await putRunFile(userId, runId, `deliverables/${name}`, buffer, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+          result = { name, estPages };
         } else {
           const spec = deckSpec.parse(raw);
           const { buffer, warnings } = await renderDeck(spec);
-          const name = `${sanitize(spec.meta.title)}.pptx`;
-          const blob = await putRunFile(userId, runId, `deliverables/${name}`, buffer, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-          manifest.deliverables.push({ mode, name, url: blob.url, at: new Date().toISOString() });
-          result = { name, url: blob.url, warnings };
+          name = `${sanitize(spec.meta.title)}.pptx`;
+          await putRunFile(userId, runId, `deliverables/${name}`, buffer, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+          result = { name, warnings };
         }
+        // one deliverable entry per mode — re-render replaces, never duplicates
+        manifest.deliverables = manifest.deliverables.filter((d) => d.mode !== mode);
+        manifest.deliverables.push({ mode, name, at: new Date().toISOString() });
         break;
       }
     }
@@ -196,6 +226,30 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
     await saveManifest(userId, runId, manifest);
     return NextResponse.json({ error: detail }, { status: 500 });
   }
+}
+
+/** Deterministic ingest for text documents: wrap extracted blocks in [src:] tags. */
+function tagDocument(name: string, raw: string): string {
+  const lines = raw.split("\n").filter((l) => !l.startsWith("=== FILE:"));
+  const issues: string[] = [];
+  const content = lines
+    .map((line, idx) => {
+      const m = line.match(/^\[block-(\d+)\]\s*(.*)$/);
+      if (m) return `${m[2]} [src: ${name}#block-${m[1]}]`;
+      if (line.includes("[UNREADABLE")) {
+        issues.push(`- ${line.trim()} (L)`);
+        return "";
+      }
+      if (line.includes("[TRUNCATED")) {
+        issues.push(`- ${line.trim()} (L)`);
+        return line;
+      }
+      // transcripts/plain text: per-line tags keep the traceability contract
+      return line.trim() ? `${line} [src: ${name}#line-${idx + 1}]` : line;
+    })
+    .filter(Boolean)
+    .join("\n");
+  return `# Source: ${name}\n\n## Content\n${content}\n\n## Extraction Issues\n${issues.length ? issues.join("\n") : "- none"}`;
 }
 
 function sanitize(name: string): string {

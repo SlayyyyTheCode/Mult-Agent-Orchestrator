@@ -16,19 +16,27 @@ export function fileKind(name: string): "document" | "image" | "audio" | "unsupp
   return "unsupported";
 }
 
-/** Extract raw text with per-block markers the ingest prompt turns into [src:] tags. */
+// Cap extracted text per file — bounds Claude input cost and stage latency.
+const MAX_EXTRACT_CHARS = 300_000;
+
+function capText(text: string): string {
+  if (text.length <= MAX_EXTRACT_CHARS) return text;
+  return text.slice(0, MAX_EXTRACT_CHARS) + `\n[TRUNCATED: file text exceeded ${MAX_EXTRACT_CHARS} chars — remainder not ingested]`;
+}
+
+/** Extract raw text with per-block markers the ingest stage turns into [src:] tags. */
 export async function extractText(name: string, buffer: Buffer): Promise<string> {
   const ext = "." + (name.split(".").pop() ?? "").toLowerCase();
   const header = `=== FILE: ${name} ===`;
 
   if ([".txt", ".md", ".vtt", ".srt"].includes(ext)) {
-    return `${header}\n${buffer.toString("utf-8")}`;
+    return `${header}\n${capText(buffer.toString("utf-8"))}`;
   }
 
   if ([".pptx", ".docx", ".pdf"].includes(ext)) {
     try {
       const ast = await parseOffice(buffer);
-      const text = ast.toText();
+      const text = capText(ast.toText());
       const blocks = text
         .split(/\n+/)
         .map((l: string) => l.trim())
