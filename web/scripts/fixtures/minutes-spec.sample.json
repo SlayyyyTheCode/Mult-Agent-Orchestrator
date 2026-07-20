@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "title": "Weekly Product Sync — Minutes",
+    "date": "2026-07-19",
+    "time": "10:00-11:00",
+    "location": "Room 4 / Teams",
+    "author": "Pipeline Test",
+    "run_id": "fixture-001"
+  },
+  "attendees": [
+    { "name": "A. Chen", "role": "PM", "present": true },
+    { "name": "B. Osei", "role": "Eng Lead", "present": true },
+    { "name": "C. Ruiz", "role": "Design", "present": false }
+  ],
+  "agenda": ["Q3 roadmap", "Churn numbers", "Hiring"],
+  "sections": [
+    {
+      "heading": "Q3 Roadmap",
+      "summary": "Roadmap holds; one feature slips to Q4.",
+      "points": [
+        { "text": "Export feature moves to Q4 due to API dependency", "confidence": "H", "sources": ["sync-notes.docx#block-3"] },
+        { "text": "Mobile beta may start early", "confidence": "L", "sources": ["sync-notes.docx#block-5"] }
+      ]
+    },
+    {
+      "heading": "Churn",
+      "summary": "Churn stable at 2.1%; enterprise churn zero.",
+      "points": [
+        { "text": "Churn 2.1%, flat month over month", "confidence": "H", "sources": ["metrics.pptx#block-9"] }
+      ]
+    }
+  ],
+  "decisions": [{ "text": "Ship export in Q4, communicate to customers", "owner": "A. Chen" }],
+  "actions": [
+    { "text": "Draft customer comms on export delay", "owner": "A. Chen", "due": "2026-07-25" },
+    { "text": "Confirm mobile beta date", "owner": "B. Osei", "due": "TBD" }
+  ],
+  "review_items": [{ "text": "Mobile beta may start early", "reason": "speaker unclear in notes (L)" }],
+  "appendix_sources": ["sync-notes.docx", "metrics.pptx"]
+}

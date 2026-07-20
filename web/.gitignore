@@ -39,7 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-.parity-test.pptx
+.parity-*.pptx
+.parity-*.docx
 
 .vercel
 .env*
