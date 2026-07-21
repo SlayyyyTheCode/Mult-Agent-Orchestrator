@@ -1,40 +1,71 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { allowlist, billingMode, clerkConfigured } from "./config";
 
 /**
  * Access control beyond "is signed in".
  *
- * ALLOWED_EMAILS: comma-separated list of email addresses permitted to use the
- * app (the owner + invited teammates). Anyone else who manages to sign up gets
- * 403 on every API route — they can never trigger a Claude call or touch Blob.
+ * Two supported deployments (see `billingMode` in config.ts):
+ *  - owner mode — ALLOWED_EMAILS lists the accounts permitted to use the app;
+ *    they may fall back to the owner's ANTHROPIC_API_KEY.
+ *  - BYOK mode  — no allowlist and no owner key: any signed-in user may run the
+ *    pipeline with their own Anthropic key, so the owner is never billed.
  *
- * Fail-closed in production: if ALLOWED_EMAILS is unset on Vercel, all API
- * access is denied with a setup hint. In local dev (no VERCEL_ENV) an unset
- * allowlist permits any signed-in user.
+ * The third combination — no allowlist but an owner key present — is refused,
+ * because it would let any stranger who signs up spend the owner's credits.
  */
 export type AuthzResult = { ok: true; userId: string } | { ok: false; status: number; error: string };
 
+export const SETUP_REQUIRED =
+  "This deployment is not configured yet. Add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in the Vercel project settings, then redeploy.";
+
 export async function requireUser(): Promise<AuthzResult> {
+  if (!clerkConfigured) return { ok: false, status: 503, error: SETUP_REQUIRED };
+
   const { userId } = await auth();
   if (!userId) return { ok: false, status: 401, error: "unauthorized" };
 
-  const allowlist = (process.env.ALLOWED_EMAILS ?? "")
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (allowlist.length === 0) {
-    if (process.env.VERCEL_ENV === "production") {
-      return { ok: false, status: 403, error: "ALLOWED_EMAILS is not configured — access is closed by default. Add your email to the ALLOWED_EMAILS env var." };
-    }
-    return { ok: true, userId }; // local dev convenience
+  const mode = billingMode();
+  if (mode === "closed") {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "Access is closed: ANTHROPIC_API_KEY is set but ALLOWED_EMAILS is empty, which would let any account spend the owner's credits. Set ALLOWED_EMAILS, or remove ANTHROPIC_API_KEY to run in bring-your-own-key mode.",
+    };
   }
+  if (mode === "byok") return { ok: true, userId }; // no owner key exists to burn
 
+  const emails = allowlist();
   const user = await currentUser();
-  const emails = (user?.emailAddresses ?? []).map((e) => e.emailAddress.toLowerCase());
-  if (!emails.some((e) => allowlist.includes(e))) {
+  const mine = (user?.emailAddresses ?? []).map((e) => e.emailAddress.toLowerCase());
+  if (!mine.some((e) => emails.includes(e))) {
     return { ok: false, status: 403, error: "this account is not authorized to use the app" };
   }
   return { ok: true, userId };
+}
+
+/**
+ * Resolve which Anthropic key pays for this request.
+ *
+ * A user-supplied key always wins, and is used transiently — never written to
+ * storage, never logged, never echoed back. The owner's env key is only a
+ * fallback for allowlisted accounts (owner mode).
+ */
+export function resolveApiKey(headerKey: string | null): { ok: true; apiKey: string } | { ok: false; error: string } {
+  const supplied = headerKey?.trim();
+  if (supplied) {
+    if (!supplied.startsWith("sk-ant-")) {
+      return { ok: false, error: "that doesn't look like an Anthropic API key (expected it to start with 'sk-ant-')" };
+    }
+    return { ok: true, apiKey: supplied };
+  }
+  if (billingMode() === "owner" && process.env.ANTHROPIC_API_KEY) {
+    return { ok: true, apiKey: process.env.ANTHROPIC_API_KEY };
+  }
+  return {
+    ok: false,
+    error: "No Anthropic API key. Add your own key in the app (it stays in your browser and is never stored on the server).",
+  };
 }
 
 /** Per-run Claude token budget — hard stop against runaway spend. */

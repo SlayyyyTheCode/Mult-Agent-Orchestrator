@@ -1,126 +1,85 @@
-"use client";
+import { clerkConfigured, ownerKeyConfigured } from "@/lib/config";
+import Dashboard from "./dashboard";
 
-import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import type { RunManifest } from "@/lib/blob";
+// Rendered per request so newly-added environment variables take effect on the
+// next request rather than being baked into a prerendered page.
+export const dynamic = "force-dynamic";
 
-export default function Dashboard() {
-  const router = useRouter();
-  const [runs, setRuns] = useState<RunManifest[] | null>(null);
-  const [title, setTitle] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/runs");
-      if (!res.ok) throw new Error(`failed to load runs (${res.status})`);
-      setRuns((await res.json()).runs);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to load runs");
-      setRuns([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    // async fetch → state set after await, not synchronously in the effect
-    const t = setTimeout(() => void load(), 0);
-    return () => clearTimeout(t);
-  }, [load]);
-
-  async function createRun(e: React.FormEvent) {
-    e.preventDefault();
-    if (!title.trim()) return;
-    setCreating(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim() }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? "create failed");
-      const { run } = await res.json();
-      router.push(`/runs/${run.run_id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "create failed");
-      setCreating(false);
-    }
-  }
+/**
+ * A deployment with no Clerk keys still serves this page — it explains what is
+ * missing instead of crashing, so the URL is live from the first deploy.
+ */
+function SetupRequired() {
+  const steps: { title: string; body: React.ReactNode }[] = [
+    {
+      title: "Create a Clerk application",
+      body: (
+        <>
+          At <span className="font-mono">dashboard.clerk.com</span>, create an application and enable Email
+          and Google. Copy the publishable key and the secret key.
+        </>
+      ),
+    },
+    {
+      title: "Add both keys in Vercel",
+      body: (
+        <>
+          Project → Settings → Environment Variables:
+          <span className="mt-2 block font-mono text-xs">
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = pk_…
+            <br />
+            CLERK_SECRET_KEY = sk_…
+          </span>
+        </>
+      ),
+    },
+    {
+      title: "Redeploy",
+      body: <>Deployments → latest → Redeploy. This page is replaced by the app.</>,
+    },
+  ];
 
   return (
     <div className="space-y-8">
       <section>
-        <h1 className="text-2xl font-bold tracking-tight">Runs</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Setup required</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Each run turns a set of meeting files into validated key points and deliverables.
+          The app is deployed and healthy — it just needs sign-in configured before anyone can use it.
         </p>
       </section>
 
-      <form onSubmit={createRun} className="flex flex-col gap-3 sm:flex-row">
-        <label className="sr-only" htmlFor="run-title">
-          New run title
-        </label>
-        <input
-          id="run-title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="e.g. Q3 steering meeting"
-          className="h-11 flex-1 rounded-lg border border-zinc-300 bg-white px-4 text-base outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900"
-          maxLength={120}
-          required
-        />
-        <button
-          type="submit"
-          disabled={creating || !title.trim()}
-          className="h-11 rounded-lg bg-blue-600 px-6 font-medium text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-zinc-950"
-        >
-          {creating ? "Creating…" : "New run"}
-        </button>
-      </form>
+      <ol className="space-y-3">
+        {steps.map((s, i) => (
+          <li
+            key={s.title}
+            className="flex gap-4 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-semibold text-white">
+              {i + 1}
+            </span>
+            <span>
+              <span className="block font-medium">{s.title}</span>
+              <span className="mt-1 block text-sm text-zinc-500 dark:text-zinc-400">{s.body}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
 
-      {error && (
-        <p role="alert" className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {error}
+      <section className="rounded-xl border border-blue-300 bg-blue-50 p-5 text-sm dark:border-blue-900 dark:bg-blue-950/40">
+        <p className="font-medium text-blue-900 dark:text-blue-200">About Claude API costs</p>
+        <p className="mt-1 text-blue-800 dark:text-blue-300">
+          You do not need to add an Anthropic key. With none set, the app runs in bring-your-own-key mode:
+          each signed-in user supplies their own key, it is held in their browser, and the owner is never
+          billed. Add <span className="font-mono">ANTHROPIC_API_KEY</span> only alongside{" "}
+          <span className="font-mono">ALLOWED_EMAILS</span>, which limits who can spend it.
         </p>
-      )}
-
-      {runs === null ? (
-        <div className="space-y-3" aria-hidden>
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-16 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800" />
-          ))}
-        </div>
-      ) : runs.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-zinc-300 px-6 py-12 text-center dark:border-zinc-700">
-          <p className="text-lg font-medium">No runs yet</p>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Create a run above, then upload your meeting files (pptx, docx, pdf, transcripts, note photos).
-          </p>
-        </div>
-      ) : (
-        <ul className="space-y-3">
-          {runs.map((r) => (
-            <li key={r.run_id}>
-              <button
-                onClick={() => router.push(`/runs/${r.run_id}`)}
-                className="flex w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-5 py-4 text-left transition hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-blue-600"
-              >
-                <span>
-                  <span className="block font-medium">{r.title}</span>
-                  <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
-                    {new Date(r.created_at).toLocaleString()} · {r.files.length} file{r.files.length === 1 ? "" : "s"} ·{" "}
-                    {r.deliverables.length} deliverable{r.deliverables.length === 1 ? "" : "s"}
-                  </span>
-                </span>
-                <span aria-hidden className="text-zinc-400">
-                  →
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      </section>
     </div>
   );
+}
+
+export default function Home() {
+  if (!clerkConfigured) return <SetupRequired />;
+  // With no owner key configured, every user must supply their own.
+  return <Dashboard byok={!ownerKeyConfigured} />;
 }

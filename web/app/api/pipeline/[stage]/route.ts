@@ -6,7 +6,7 @@ import { deckSpec, minutesSpec, validationSummary, type PipelineStage, PIPELINE_
 import { extractText, fileKind, mediaTypeForImage } from "@/lib/extract";
 import { renderDeck } from "@/lib/render/pptx";
 import { renderMinutes } from "@/lib/render/docx";
-import { MAX_TOKENS_PER_RUN, requireUser } from "@/lib/authz";
+import { MAX_TOKENS_PER_RUN, requireUser, resolveApiKey } from "@/lib/authz";
 import { z } from "zod";
 
 export const maxDuration = 300; // needs Vercel fluid compute / pro for full length
@@ -43,6 +43,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
     );
   }
 
+  // Whose Claude credits pay for this run. A user-supplied key is used
+  // transiently: never persisted, never logged, never returned.
+  const key = resolveApiKey(req.headers.get("x-anthropic-key"));
+  if (!key.ok) return NextResponse.json({ error: key.error }, { status: 400 });
+  const apiKey = key.apiKey;
+
   try {
     let tokens = 0;
     let result: unknown = null;
@@ -71,6 +77,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
           if (kind === "image") {
             imageTasks.push(
               callClaude({
+                apiKey,
                 system: ingestSystem(),
                 user: [
                   { type: "image", source: { type: "base64", media_type: mediaTypeForImage(name) as "image/png", data: buf.toString("base64") } },
@@ -113,6 +120,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
         const ingest = await getRunFile(userId, runId, "01-ingest.md");
         if (!ingest) throw new Error("ingest output missing — run ingest first");
         const claude = await callClaude({
+          apiKey,
           system: organizeSystem(),
           user: `run_id: ${runId}\n\nIngest output (lossless, source-tagged):\n\n${untrusted("ingest output", ingest)}`,
           maxTokens: 12000,
@@ -130,6 +138,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
         ]);
         if (!ingest || !organizing) throw new Error("missing upstream outputs — run ingest and organize first");
         const { data, tokens: t } = await callClaudeJson({
+          apiKey,
           system: validateSystem(),
           user: `run_id: ${runId}\n\nGROUND TRUTH (ingest output):\n${untrusted("ingest output", ingest)}\n\nUNDER REVIEW (organizing output):\n${untrusted("organizing output", organizing)}`,
           parse: (raw) => validationSummary.safeParse(raw),
@@ -149,12 +158,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
         const gen =
           mode === "minutes"
             ? await callClaudeJson({
+                apiKey,
                 system: mckinseySystem(mode),
                 user: genPrompt,
                 parse: (raw) => minutesSpec.safeParse(raw),
                 maxTokens: 16000,
               })
             : await callClaudeJson({
+                apiKey,
                 system: mckinseySystem(mode),
                 user: genPrompt,
                 parse: (raw) => deckSpec.safeParse(raw),
@@ -181,6 +192,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ stage: str
           spec: schema,
         });
         const { data, tokens: t } = await callClaudeJson({
+          apiKey,
           system: uiuxSystem(kind as "deck" | "minutes"),
           user: `run_id: ${runId}\n\nGround truth (validation summary):\n${untrusted("validation summary", validation)}\n\nMcKinsey ${kind} spec under review:\n${untrusted(`${kind} spec`, specText)}`,
           parse: (raw) => wrapper.safeParse(raw),

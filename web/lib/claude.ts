@@ -1,6 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// The key is passed per call rather than read from the environment, so a
+// user-supplied ("bring your own key") credential is used transiently and never
+// becomes process-wide state.
+function clientFor(apiKey: string) {
+  return new Anthropic({ apiKey });
+}
 
 export const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5";
 
@@ -10,11 +15,12 @@ export interface ClaudeResult {
 }
 
 export async function callClaude(opts: {
+  apiKey: string;
   system: string;
   user: string | Anthropic.MessageParam["content"];
   maxTokens?: number;
 }): Promise<ClaudeResult> {
-  const msg = await client.messages.create({
+  const msg = await clientFor(opts.apiKey).messages.create({
     model: MODEL,
     max_tokens: opts.maxTokens ?? 8192,
     system: opts.system,
@@ -33,6 +39,7 @@ export async function callClaude(opts: {
  * (mirrors the Stage-1 orchestrator's one-retry-with-defect-list rule).
  */
 export async function callClaudeJson<T>(opts: {
+  apiKey: string;
   system: string;
   user: string;
   parse: (raw: unknown) => { success: true; data: T } | { success: false; error: { message: string } };
@@ -42,7 +49,7 @@ export async function callClaudeJson<T>(opts: {
   let prompt = opts.user;
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await callClaude({ system: opts.system, user: prompt, maxTokens: opts.maxTokens });
+    const res = await callClaude({ apiKey: opts.apiKey, system: opts.system, user: prompt, maxTokens: opts.maxTokens });
     tokens += res.tokens;
     const raw = extractJson(res.text);
     if (raw !== null) {

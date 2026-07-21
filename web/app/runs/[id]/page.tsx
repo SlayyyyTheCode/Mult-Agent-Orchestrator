@@ -3,6 +3,8 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import type { RunManifest } from "@/lib/blob";
 import type { ValidationSummary } from "@/lib/schemas";
+import { pipelineHeaders, readKey } from "@/lib/client-key";
+import ApiKeyPanel from "../../api-key-panel";
 
 type Mode = "deck-csuite" | "deck-technical" | "minutes";
 const ANALYZE_STAGES = ["ingest", "organize", "validate"] as const;
@@ -30,6 +32,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   const [busy, setBusy] = useState<string | null>(null); // current stage label or null
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [needsKey, setNeedsKey] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -44,8 +47,11 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   }, [id]);
 
   useEffect(() => {
-    // async fetch → state set after await, not synchronously in the effect
-    const t = setTimeout(() => void load(), 0);
+    // state is set after the tick, not synchronously in the effect body
+    const t = setTimeout(() => {
+      if (!readKey()) setNeedsKey(true);
+      void load();
+    }, 0);
     return () => clearTimeout(t);
   }, [load]);
 
@@ -74,11 +80,14 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
         setBusy(STAGE_LABEL[stage] ?? stage);
         const res = await fetch(`/api/pipeline/${stage}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: pipelineHeaders(),
           body: JSON.stringify({ runId: id, mode }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(`${STAGE_LABEL[stage]}: ${data.error ?? "failed"}`);
+        if (!res.ok) {
+          if (res.status === 400 && /API key/i.test(data.error ?? "")) setNeedsKey(true);
+          throw new Error(`${STAGE_LABEL[stage]}: ${data.error ?? "failed"}`);
+        }
         await load();
       }
     } catch (e) {
@@ -114,6 +123,8 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           {error}
         </p>
       )}
+
+      <ApiKeyPanel required={needsKey} />
 
       {/* 1 — files */}
       <section className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
